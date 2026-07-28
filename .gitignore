@@ -1,0 +1,30 @@
+# 环境变量（含 API Key，不要提交）
+.env
+
+# Milvus 本地数据
+milvus_data/
+milvus_v2/
+milvus_fresh/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# 测试文件
+test_docling.py
+test_docling_pdf.py
+test_docling_xlsx.py
+test_compare.py
+test_formula.py
+test_formula2.py
+test_timing.py
+
+# 临时文件
+*.tmp
+server_out.txt
+server_err.txt
