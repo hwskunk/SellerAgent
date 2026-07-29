@@ -18,8 +18,17 @@ def build_prompt(
     intent: str,
     retrieved_docs: list[dict],
     history: list[dict] | None = None,
+    summary: str | None = None,
 ) -> str:
-    """构建生成提示词（供流式和非流式共用）。"""
+    """构建生成提示词（供流式和非流式共用）。
+
+    Args:
+        user_message: 用户当前消息
+        intent: 意图分类结果
+        retrieved_docs: 知识库检索结果
+        history: 最近 10 轮完整对话
+        summary: 超过 10 轮部分的精炼总结
+    """
     if retrieved_docs:
         context_parts = []
         for i, doc in enumerate(retrieved_docs):
@@ -32,19 +41,25 @@ def build_prompt(
     else:
         retrieved_context = "（知识库中暂无相关内容）"
 
-    # 对话历史
+    # 对话总结（超过10轮部分）
+    summary_text = ""
+    if summary:
+        summary_text = f"【之前的对话总结】\n{summary}\n\n"
+
+    # 最近10轮完整对话
     history_text = ""
     if history:
         lines = []
-        for m in history[-10:]:  # 最近 10 轮
+        for m in history:
             role_label = "用户" if m["role"] == "user" else "销售顾问"
             lines.append(f"{role_label}: {m['content']}")
-        history_text = "\n".join(lines)
+        history_text = "\n".join(lines) + "\n"
 
     return GENERATE_USER.format(
         user_message=user_message,
         intent=intent,
         retrieved_context=retrieved_context,
+        summary_text=summary_text,
         history_text=history_text,
     )
 
@@ -54,12 +69,13 @@ async def stream_response(
     intent: str,
     retrieved_docs: list[dict],
     history: list[dict] | None = None,
+    summary: str | None = None,
     temperature: float = 0.3,
 ) -> AsyncIterator[str]:
     """流式生成销售回复，逐 token 产出。"""
     llm = get_smart_llm()
     llm.temperature = temperature
-    user_prompt = build_prompt(user_message, intent, retrieved_docs, history)
+    user_prompt = build_prompt(user_message, intent, retrieved_docs, history, summary)
 
     async for chunk in llm.astream([
         SystemMessage(content=GENERATE_SYSTEM),
@@ -93,11 +109,16 @@ async def generate_node(state: SellerState) -> dict:
         print(f"[generate] Generation failed: {e}")
         reply = FALLBACK_RESPONSE
 
-    # 构建来源信息
+    # 构建来源信息（按 title 去重，保留第一条）
     sources = []
+    seen_titles = set()
     for doc in retrieved_docs:
+        key = doc.get("title", "")
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
         sources.append({
-            "title": doc.get("title", ""),
+            "title": key,
             "source": doc.get("source", ""),
             "score": doc.get("score", 0),
         })

@@ -21,7 +21,10 @@ from langchain_core.messages import HumanMessage
 
 from src.state import SellerState
 from src.graph import get_graph
-from src.memory import get_history, add_message, clear_history
+from src.memory import (
+    get_recent_messages, get_summary, add_message, maybe_summarize, clear_history,
+    list_threads, get_thread_messages,
+)
 from src.schemas import (
     ChatRequest, ChatResponse,
     KBDocumentAdd, KBDocumentDelete, KBDocumentInfo, KBStats,
@@ -48,9 +51,15 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.on_event("startup")
 async def startup():
-    """启动时初始化 KB 和 LangGraph。"""
+    """启动时初始化 KB、预加载模型、编译 LangGraph。"""
     from src.kb.milvus_client import get_kb
-    get_kb()
+    kb = get_kb()
+
+    # 预加载模型到内存，避免首请求等待（embedding + reranker 各 ~1GB）
+    kb._get_dense_model()
+    kb._get_reranker()
+    print("[SellerAgent] 模型预加载完成")
+
     await get_graph()
     print("[SellerAgent] 启动完成")
 
@@ -96,11 +105,18 @@ async def chat(req: ChatRequest):
         # 保存对话历史
         add_message(thread_id, "user", req.message)
         add_message(thread_id, "assistant", reply)
+        maybe_summarize(thread_id)
 
+        # 构建来源（按 title 去重）
         sources = []
+        seen_titles = set()
         for doc in docs:
+            key = doc.get("title", "")
+            if key in seen_titles:
+                continue
+            seen_titles.add(key)
             sources.append({
-                "title": doc.get("title", ""),
+                "title": key,
                 "source": doc.get("source", ""),
                 "score": doc.get("score", 0),
             })
@@ -123,7 +139,7 @@ async def chat(req: ChatRequest):
 
 @app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest):
-    """流式对话接口 — SSE (Server-Sent Events)，逐 token 推送，支持上下文记忆。"""
+    """流式对话接口 — SSE，逐 token 推送，带 Summary Buffer 记忆。"""
     import json as _json
     from fastapi.responses import StreamingResponse
     from src.nodes.classify import classify_node
@@ -139,41 +155,46 @@ async def chat_stream(req: ChatRequest):
         "retrieved_docs": [],
         "final_response": "",
     }
-
     classify_result = await classify_node(state)
     intent = classify_result.get("intent", "general_chat")
-
     retrieve_result = await retrieve_node(state)
     docs = retrieve_result.get("retrieved_docs", [])
 
-    # 加载对话历史
-    history = get_history(thread_id)
+    # 加载记忆：总结 + 最近10轮
+    summary = get_summary(thread_id)
+    recent_msgs, _total = get_recent_messages(thread_id)
 
     # 保存用户消息
     add_message(thread_id, "user", req.message)
 
+    # 构建来源（按 title 去重，保留第一条）
     sources = []
-    for doc in docs:
-        sources.append({
-            "title": doc.get("title", ""),
-            "source": doc.get("source", ""),
-            "score": doc.get("score", 0),
-        })
+    seen_titles = set()
+    for d in docs:
+        key = d.get("title", "")
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
+        sources.append({"title": key, "source": d.get("source", ""), "score": d.get("score", 0)})
 
     async def generate():
         yield f"data: {_json.dumps({'type':'meta','intent':intent,'retrieved_count':len(docs),'sources':sources}, ensure_ascii=False)}\n\n"
 
         full_reply = ""
         try:
-            async for token in stream_response(req.message, intent, docs, history=history):
+            async for token in stream_response(
+                req.message, intent, docs,
+                history=recent_msgs, summary=summary,
+            ):
                 full_reply += token
                 yield f"data: {_json.dumps({'type':'token','content':token}, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {_json.dumps({'type':'error','content':str(e)}, ensure_ascii=False)}\n\n"
 
-        # 保存 AI 回复
         if full_reply:
             add_message(thread_id, "assistant", full_reply)
+            # 检查是否需要触发总结（在生成回复之后异步执行）
+            maybe_summarize(thread_id)
 
         yield "data: [DONE]\n\n"
 
@@ -186,6 +207,47 @@ async def chat_stream(req: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+# 会话管理 API
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/threads")
+async def api_list_threads():
+    """列出所有会话。"""
+    try:
+        threads = list_threads()
+        return JSONResponse({"success": True, "data": threads})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/threads")
+async def api_new_thread():
+    """创建新会话，返回 thread_id。"""
+    thread_id = uuid.uuid4().hex[:12]
+    return JSONResponse({"success": True, "thread_id": thread_id})
+
+
+@app.get("/api/threads/{thread_id}")
+async def api_get_thread_messages(thread_id: str):
+    """获取指定会话的全部消息。"""
+    try:
+        msgs = get_thread_messages(thread_id)
+        return JSONResponse({"success": True, "data": msgs})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.delete("/api/threads/{thread_id}")
+async def api_delete_thread(thread_id: str):
+    """删除指定会话及其所有消息。"""
+    try:
+        clear_history(thread_id)
+        return JSONResponse({"success": True, "message": f"会话 {thread_id} 已删除"})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
 # ═══════════════════════════════════════════════════════════════

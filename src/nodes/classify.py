@@ -1,10 +1,10 @@
 """
 意图分类节点
-使用 LLM 结构化输出判断用户意图，含关键词兜底。
+使用 LLM 简单 JSON 输出 + 关键词兜底。
 """
+import json
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.state import SellerState
-from src.schemas import SellerIntent
 from src.llm import get_fast_llm
 from src.prompts.templates import CLASSIFY_SYSTEM, CLASSIFY_USER
 
@@ -19,15 +19,31 @@ async def classify_node(state: SellerState) -> dict:
 
     try:
         llm = get_fast_llm()
-        structured_llm = llm.with_structured_output(SellerIntent)
-        result = structured_llm.invoke([
+        # 不用 with_structured_output（DashScope 兼容模式不稳定），
+        # 改为让 LLM 直接输出 JSON 再手动解析
+        resp = llm.invoke([
             SystemMessage(content=CLASSIFY_SYSTEM),
             HumanMessage(content=CLASSIFY_USER.format(user_message=last_msg)),
         ])
-        intent = result.intent
-        print(f"[classify] intent={intent} | {result.summary}")
+        text = resp.content.strip()
+
+        # 提取 JSON（可能包裹在 markdown 代码块中）
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+
+        data = json.loads(text)
+        raw_intent = data.get("intent", "general_chat")
+        summary = data.get("summary", "")
+
+        # 规范化 intent 值
+        valid_intents = {"sales_inquiry", "product_info", "kb_management", "general_chat"}
+        intent = raw_intent if raw_intent in valid_intents else "general_chat"
+        print(f"[classify] intent={intent} | {summary}")
     except Exception as e:
-        print(f"[classify] LLM classify failed ({e}), using keyword fallback")
+        print(f"[classify] LLM classify failed ({type(e).__name__}: {str(e)[:80]}), using keyword fallback")
         intent = _keyword_fallback(last_msg)
 
     return {"intent": intent}

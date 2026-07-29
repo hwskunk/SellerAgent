@@ -24,6 +24,15 @@ test_formula.py
 test_formula2.py
 test_timing.py
 
+# SQLite 数据库
+*.db
+
+# 知识库文件（太大）
+knowledge/
+
+# 临时文档
+test_conversation.md
+
 # 临时文件
 *.tmp
 server_out.txt

@@ -29,17 +29,23 @@
     <!-- ═══════════════════════════════════════════════════════ -->
     <div class="main-container">
 
-        <!-- ─── 左侧：对话面板 ─── -->
+        <!-- ─── 左侧：会话列表 ─── -->
+        <div class="session-sidebar" id="sessionSidebar">
+            <div class="session-sidebar-header">
+                <button class="btn btn-primary btn-sm" onclick="newThread()" style="width:100%;">
+                    <img src="/static/icons/add.svg" class="icon-img" alt=""> 新建对话
+                </button>
+            </div>
+            <div class="session-list" id="sessionList">
+                <div class="empty-state" style="padding:16px;">
+                    <p style="font-size:12px;">加载中...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ─── 中间：对话面板 ─── -->
         <div class="chat-panel">
             <div class="chat-messages" id="chatMessages">
-                <div class="message agent">
-                    <div class="message-avatar" title="销售顾问"><img src="/static/icons/bot.svg" class="icon-img" alt="" style="font-size:18px;"></div>
-                    <div class="message-bubble">
-                        您好！我是您的<strong>销售智能助手</strong> <img src="/static/icons/greet.svg" class="icon-img" alt="" style="font-size:18px;"><br><br>
-                        我可以基于知识库中的资料，帮您回答产品信息、销售话术、客户常见问题等。<br><br>
-                        <img src="/static/icons/add.svg" class="icon-img" alt=""> <strong>使用提示：</strong>先在右侧面板添加销售资料到知识库，我就能基于这些资料为您提供专业的销售支持！
-                    </div>
-                </div>
             </div>
 
             <div class="chat-input-area">

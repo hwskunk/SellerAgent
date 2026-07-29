@@ -23,6 +23,14 @@ function icon(name) {
 
 document.addEventListener('DOMContentLoaded', () => {
     initChat();
+    initThreads();
+
+    const modal = document.getElementById('docModal');
+    if (modal) {
+        modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+    }
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
     refreshDocList();
     refreshStats();
 });
@@ -253,7 +261,7 @@ function renderDocList(docs) {
     }
 
     container.innerHTML = docs.map(doc => `
-        <div class="doc-item" onclick="viewDocument('${doc.id}')" title="点击查看完整内容">
+        <div class="doc-item" data-doc-id="${doc.id}" onclick="viewDocument('${doc.id}')" title="点击查看完整内容">
             <div class="doc-item-header">
                 <span class="doc-item-title">${icon('docs')} ${escapeHtml(doc.title || '无标题')}</span>
                 <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteDocument('${doc.id}')" title="删除此文档">
@@ -261,7 +269,7 @@ function renderDocList(docs) {
                 </button>
             </div>
             <div class="doc-item-meta">
-                <span>${icon('chars')} ${(doc.char_count || 0).toLocaleString()} 字</span>
+                <span>${icon('chars')} ${(doc.char_count || 0).toLocaleString()} 字 · ${doc.chunk_count || 1} 片段</span>
                 <span>${icon('time')} ${doc.created_at}</span>
             </div>
         </div>
@@ -450,23 +458,30 @@ async function deleteDocument(docId) {
         return;
     }
 
-    try {
-        const response = await fetch(`/api/kb/docs/${docId}`, {
-            method: 'DELETE',
-        });
+    // 乐观 UI：立即从 DOM 移除，不等服务端响应
+    const item = document.querySelector(`.doc-item[data-doc-id="${docId}"]`);
+    if (item) {
+        item.style.opacity = '0';
+        item.style.transition = 'opacity 0.2s';
+        setTimeout(() => item.remove(), 200);
+    }
 
+    try {
+        const response = await fetch(`/api/kb/docs/${docId}`, { method: 'DELETE' });
         const data = await response.json();
 
         if (data.success) {
             showToast('文档已删除', 'success');
-            refreshDocList();
-            refreshStats();
         } else {
             showToast('删除失败: ' + data.error, 'error');
         }
     } catch (error) {
         showToast('删除失败: ' + error.message, 'error');
     }
+
+    // 后台静默刷新，确保数据一致
+    refreshDocList();
+    refreshStats();
 }
 
 // ── 查看文档全文 ──
@@ -506,20 +521,6 @@ function closeModal() {
     document.getElementById('docModal').style.display = 'none';
 }
 
-// 点击遮罩关闭弹窗
-document.addEventListener('DOMContentLoaded', () => {
-    const modal = document.getElementById('docModal');
-    if (modal) {
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) closeModal();
-        });
-    }
-    // ESC 关闭
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') closeModal();
-    });
-});
-
 // ── 刷新统计 ──
 
 async function refreshStats() {
@@ -535,6 +536,122 @@ async function refreshStats() {
         }
     } catch (error) {
         console.error('获取统计失败:', error);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 会话管理
+// ═══════════════════════════════════════════════════════════════
+
+async function initThreads() {
+    await refreshThreadList();
+    // 如果没有会话，自动创建默认会话
+    const items = document.querySelectorAll('.session-item');
+    if (items.length === 0) {
+        await newThread();
+    } else {
+        // 选中第一个会话
+        const firstId = items[0].dataset.threadId;
+        switchThread(firstId);
+    }
+}
+
+async function refreshThreadList() {
+    try {
+        const resp = await fetch('/api/threads');
+        const data = await resp.json();
+        if (!data.success) return;
+
+        const list = document.getElementById('sessionList');
+        if (!data.data || data.data.length === 0) {
+            list.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="font-size:12px;">暂无会话</p></div>';
+            return;
+        }
+
+        list.innerHTML = data.data.map(t => {
+            const isActive = t.thread_id === STATE.threadId;
+            return `<div class="session-item${isActive ? ' active' : ''}" data-thread-id="${t.thread_id}" onclick="switchThread('${t.thread_id}')">
+                <div style="flex:1;min-width:0;">
+                    <div class="session-item-preview">${escapeHtml(t.thread_id)}</div>
+                    <div class="session-item-time">${t.total_rounds} 轮 · ${escapeHtml(t.last_time || '')}</div>
+                </div>
+                <button class="session-item-delete" onclick="event.stopPropagation();deleteThread('${t.thread_id}')" title="删除此会话">✕</button>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        console.error('加载会话列表失败:', e);
+    }
+}
+
+async function switchThread(threadId) {
+    STATE.threadId = threadId;
+    // 更新侧边栏高亮
+    document.querySelectorAll('.session-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.threadId === threadId);
+    });
+
+    // 清空聊天记录
+    const container = document.getElementById('chatMessages');
+    container.innerHTML = '';
+
+    // 从后端加载此会话的历史消息
+    try {
+        const resp = await fetch(`/api/threads/${threadId}`);
+        const data = await resp.json();
+        if (data.success && data.data.length > 0) {
+            data.data.forEach(m => {
+                addMessage(m.role === 'user' ? 'user' : 'agent', m.content);
+            });
+        } else {
+            // 空会话，显示欢迎语
+            addMessage('agent',
+                '您好！我是您的<strong>销售智能助手</strong> <img src="/static/icons/greet.svg" class="icon-img" alt="" style="font-size:18px;"><br><br>' +
+                '我可以基于知识库中的资料，帮您回答产品信息、销售话术、客户常见问题等。<br><br>' +
+                '<img src="/static/icons/add.svg" class="icon-img" alt=""> <strong>使用提示：</strong>先在右侧面板添加销售资料到知识库，我就能基于这些资料为您提供专业的销售支持！'
+            );
+        }
+        scrollToBottom();
+    } catch (e) {
+        console.error('加载会话消息失败:', e);
+    }
+}
+
+async function newThread() {
+    try {
+        const resp = await fetch('/api/threads', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            await refreshThreadList();
+            switchThread(data.thread_id);
+        }
+    } catch (e) {
+        showToast('创建会话失败: ' + e.message, 'error');
+    }
+}
+
+async function deleteThread(threadId) {
+    if (!confirm('确定删除此会话？\n\n会话中的所有对话记录将被永久删除，不可恢复。')) return;
+
+    try {
+        const resp = await fetch(`/api/threads/${threadId}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.success) {
+            await refreshThreadList();
+            // 如果删除的是当前会话，切换到第一个
+            if (threadId === STATE.threadId) {
+                const items = document.querySelectorAll('.session-item');
+                if (items.length > 0) {
+                    switchThread(items[0].dataset.threadId);
+                } else {
+                    await newThread();
+                }
+            }
+            showToast('会话已删除', 'success');
+        } else {
+            showToast('删除失败: ' + data.error, 'error');
+        }
+    } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
     }
 }
 

@@ -16,10 +16,13 @@ CLASSIFY_SYSTEM = """你是一个意图分类器。根据用户的消息，判�
 - "这个多少钱" → sales_inquiry（涉及价格/购买意愿）
 - "这个产品支持什么功能" → product_info（单纯了解产品）
 - "你们知识库里都有什么" → kb_management
-- "你好" → general_chat"""
+- "你好" → general_chat
+
+只输出 JSON，不要其他内容：
+{"intent": "<intent>", "summary": "<一句话总结>"}"""
 
 CLASSIFY_USER = """用户消息：{user_message}
-请判断用户意图。"""
+请输出 JSON。"""
 
 
 # ── generate 节点 ──
@@ -32,8 +35,8 @@ GENERATE_SYSTEM = """你是一个专业的销售顾问智能体。你的任务�
 5. 对于销售类问题，在提供信息的同时适当引导转化（但不要过度推销）
 6. 用中文回复"""
 
-GENERATE_USER = """{history_text}
-用户问题：{user_message}
+GENERATE_USER = """{summary_text}{history_text}
+用户当前消息：{user_message}
 
 意图分类：{intent}
 
