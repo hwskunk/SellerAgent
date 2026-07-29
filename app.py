@@ -23,7 +23,7 @@ from src.state import SellerState
 from src.graph import get_graph
 from src.memory import (
     get_recent_messages, get_summary, add_message, maybe_summarize, clear_history,
-    list_threads, get_thread_messages,
+    list_threads, get_thread_messages, rename_thread,
 )
 from src.schemas import (
     ChatRequest, ChatResponse,
@@ -246,6 +246,16 @@ async def api_delete_thread(thread_id: str):
     try:
         clear_history(thread_id)
         return JSONResponse({"success": True, "message": f"会话 {thread_id} 已删除"})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.put("/api/threads/{thread_id}/rename")
+async def api_rename_thread(req: ChatRequest, thread_id: str):
+    """重命名会话。请求体: {"message": "新名称"}（复用 ChatRequest.message 字段）"""
+    try:
+        rename_thread(thread_id, req.message)
+        return JSONResponse({"success": True, "message": "已重命名"})
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 

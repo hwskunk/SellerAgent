@@ -37,11 +37,16 @@ def _ensure_tables(conn: sqlite3.Connection):
             thread_id TEXT PRIMARY KEY,
             summary_text TEXT NOT NULL DEFAULT '',
             summarized_until_id INTEGER NOT NULL DEFAULT 0,
+            title TEXT DEFAULT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         );
         CREATE INDEX IF NOT EXISTS idx_thread ON messages(thread_id);
         CREATE INDEX IF NOT EXISTS idx_created ON messages(thread_id, created_at);
     """)
+    # 兼容旧表：如果 title 列不存在则添加
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(summaries)").fetchall()]
+    if "title" not in cols:
+        conn.execute("ALTER TABLE summaries ADD COLUMN title TEXT DEFAULT NULL")
     conn.commit()
 
 
@@ -108,7 +113,7 @@ def clear_history(thread_id: str):
 
 
 def list_threads() -> list[dict[str, Any]]:
-    """列出所有会话及其统计信息。"""
+    """列出所有会话及其统计信息（含标题）。"""
     conn = _get_conn()
     _ensure_tables(conn)
     rows = conn.execute("""
@@ -116,13 +121,25 @@ def list_threads() -> list[dict[str, Any]]:
                COUNT(*) as total,
                MAX(m.created_at) as last_time,
                MIN(m.created_at) as first_time,
-               s.summary_text
+               s.summary_text,
+               s.title AS custom_title
         FROM messages m
         LEFT JOIN summaries s ON m.thread_id = s.thread_id
         GROUP BY m.thread_id
         ORDER BY last_time DESC
     """).fetchall()
+
+    # 为每个线程取第一条用户消息作为默认标题
+    first_msgs = {}
+    for r in rows:
+        first = conn.execute(
+            "SELECT content FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1",
+            (r["thread_id"],)
+        ).fetchone()
+        first_msgs[r["thread_id"]] = first["content"] if first else ""
+
     conn.close()
+
     return [
         {
             "thread_id": r["thread_id"],
@@ -131,9 +148,36 @@ def list_threads() -> list[dict[str, Any]]:
             "first_time": r["first_time"],
             "last_time": r["last_time"],
             "has_summary": bool(r["summary_text"] and r["summary_text"].strip()),
+            "title": _make_thread_title(r["custom_title"], first_msgs.get(r["thread_id"], "")),
         }
         for r in rows
     ]
+
+
+def _make_thread_title(custom_title: str | None, first_message: str) -> str:
+    """生成会话标题：优先用自定义标题，否则用第一条用户消息截断。"""
+    if custom_title and custom_title.strip():
+        return custom_title.strip()
+    if first_message:
+        # 截断到 20 字，去掉换行
+        clean = first_message.replace("\n", " ").strip()
+        return clean[:20] + ("…" if len(clean) > 20 else "")
+    return "新会话"
+
+
+def rename_thread(thread_id: str, title: str):
+    """重命名会话。"""
+    conn = _get_conn()
+    _ensure_tables(conn)
+    conn.execute("""
+        INSERT INTO summaries (thread_id, title, updated_at)
+        VALUES (?, ?, datetime('now', 'localtime'))
+        ON CONFLICT(thread_id) DO UPDATE SET
+            title = excluded.title,
+            updated_at = datetime('now', 'localtime')
+    """, (thread_id, title.strip() or None))
+    conn.commit()
+    conn.close()
 
 
 def get_thread_messages(thread_id: str) -> list[dict[str, str]]:

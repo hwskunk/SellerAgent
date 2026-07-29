@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-os.environ.setdefault("MILVUS_DB_PATH", str(Path(__file__).parent / "milvus_v2" / "kb.db"))
+os.environ.setdefault("MILVUS_DB_PATH", str(Path(__file__).parent / "milvus_fresh" / "seller_kb.db"))
 
 import uvicorn
 

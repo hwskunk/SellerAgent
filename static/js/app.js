@@ -124,6 +124,8 @@ async function sendMessage() {
 
         // 流结束，最终渲染
         finalizeStreamingMessage(msgEl, fullContent, sources);
+        // 刷新侧边栏（新会话的第一条消息会变成标题）
+        refreshThreadList();
 
     } catch (error) {
         updateStreamingMessage(msgEl, '抱歉，处理您的请求时出现了错误：' + error.message, []);
@@ -570,9 +572,10 @@ async function refreshThreadList() {
 
         list.innerHTML = data.data.map(t => {
             const isActive = t.thread_id === STATE.threadId;
+            const title = t.title || '新会话';
             return `<div class="session-item${isActive ? ' active' : ''}" data-thread-id="${t.thread_id}" onclick="switchThread('${t.thread_id}')">
                 <div style="flex:1;min-width:0;">
-                    <div class="session-item-preview">${escapeHtml(t.thread_id)}</div>
+                    <div class="session-item-preview" title="${escapeHtml(title)}&#10;双击可重命名" ondblclick="event.stopPropagation();startRename('${t.thread_id}', this)">${escapeHtml(title)}</div>
                     <div class="session-item-time">${t.total_rounds} 轮 · ${escapeHtml(t.last_time || '')}</div>
                 </div>
                 <button class="session-item-delete" onclick="event.stopPropagation();deleteThread('${t.thread_id}')" title="删除此会话">✕</button>
@@ -653,6 +656,48 @@ async function deleteThread(threadId) {
     } catch (e) {
         showToast('删除失败: ' + e.message, 'error');
     }
+}
+
+// ── 重命名会话 ──
+
+function startRename(threadId, el) {
+    const oldTitle = el.textContent;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldTitle;
+    input.className = 'session-rename-input';
+    input.style.cssText = 'width:100%;font-size:13px;padding:2px 4px;border:1px solid var(--primary);border-radius:4px;outline:none;';
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const commit = async () => {
+        const newTitle = input.value.trim() || oldTitle;
+        // 乐观更新 UI
+        const newEl = document.createElement('div');
+        newEl.className = 'session-item-preview';
+        newEl.title = newTitle + '\n双击可重命名';
+        newEl.textContent = newTitle;
+        newEl.setAttribute('ondblclick', `event.stopPropagation();startRename('${threadId}', this)`);
+        input.replaceWith(newEl);
+
+        // 异步通知后端
+        try {
+            await fetch(`/api/threads/${threadId}/rename`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: newTitle, thread_id: threadId }),
+            });
+        } catch (e) {
+            console.error('重命名失败:', e);
+        }
+    };
+
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { input.value = oldTitle; input.blur(); }
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════

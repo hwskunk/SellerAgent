@@ -5,8 +5,12 @@
 - 文本分块：langchain RecursiveCharacterTextSplitter
 - 向量存储：Milvus（chunk 粒度）
 - 元数据：SQLite doc_store
+- 源文件同步：knowledge/ 目录实时同步增删
 """
+import hashlib
 import os
+import re as _re
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -18,6 +22,9 @@ from src.kb import doc_store
 _converter = None
 
 CHUNK_SIZE = 500      # 每 chunk 约 500 字符
+
+# 源文件存档目录（项目根目录下）
+KNOWLEDGE_DIR = Path(__file__).resolve().parents[2] / "knowledge"
 CHUNK_OVERLAP = 50    # chunk 间重叠 50 字符
 
 
@@ -312,9 +319,9 @@ def _apply_overlap(chunks: list[str], overlap: int) -> list[str]:
     return result
 
 
-def _chunk_and_insert(title: str, content: str, source: str) -> dict:
+def _chunk_and_insert(title: str, content: str, source: str, knowledge_path: str = "", doc_id: str = "", content_hash: str = "") -> dict:
     """文本分块 → Milvus 入库 → doc_store 记录元数据。"""
-    doc_id = uuid.uuid4().hex[:12]
+    doc_id = doc_id or uuid.uuid4().hex[:12]
     kb = get_kb()
 
     # 预处理：归一化单行长文本
@@ -365,10 +372,12 @@ def _chunk_and_insert(title: str, content: str, source: str) -> dict:
     # 插入 Milvus
     kb.insert_chunks(doc_id=doc_id, title=title, source=source, chunks=chunks)
 
-    # 记录元数据
+    # 记录元数据（含 knowledge_path，用于删除时同步清理源文件）
     doc_store.add_document(
         doc_id=doc_id, title=title, full_content=content,
         chunk_count=len(chunks), source=source,
+        knowledge_path=knowledge_path,
+        content_hash=content_hash,
     )
 
     print(f"[Manager] Doc chunked: {len(chunks)} chunks, title={title}")
@@ -394,21 +403,81 @@ def _pos_to_line(positions: list[int], pos: int) -> int:
 # 公开 API
 # ═══════════════════════════════════════════════════════════════
 
+def _sanitize_filename(name: str, max_len: int = 80) -> str:
+    """把标题转为安全的文件名片段。"""
+    name = _re.sub(r'[\\/:*?"<>|]', '_', name)
+    name = _re.sub(r'\s+', '_', name)
+    return name[:max_len].strip("_")
+
+
 def add_text_document(title: str, content: str, source: str = "manual") -> dict:
-    """添加纯文本知识文档（自动分块 + 入库）。"""
+    """添加纯文本知识文档（自动分块 + 入库），同步保存到 knowledge/ 目录。"""
     if not content.strip():
         raise ValueError("内容不能为空")
-    return _chunk_and_insert(title=title, content=content, source=source)
+
+    # 内容去重检查
+    text_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    existing = doc_store.get_document_by_hash(text_hash)
+    if existing:
+        raise ValueError(
+            f"内容完全相同的文档已存在于知识库中（文档: {existing['title']}，"
+            f"ID: {existing['id']}），无需重复添加"
+        )
+
+    # 先生成 doc_id，写入源文件后再入库（确保 knowledge_path 一次到位）
+    doc_id = uuid.uuid4().hex[:12]
+    safe_title = _sanitize_filename(title) if title else "untitled"
+    file_name = f"{doc_id}_{safe_title}.md"
+    file_path = KNOWLEDGE_DIR / file_name
+    os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
+    file_path.write_text(content, encoding="utf-8")
+    print(f"[Manager] Source file saved: {file_path}")
+
+    return _chunk_and_insert(
+        title=title, content=content, source=source,
+        doc_id=doc_id, knowledge_path=str(file_path),
+        content_hash=text_hash,
+    )
 
 
 def add_file_document(file_path: str, file_name: str = "") -> dict:
-    """从文件导入知识文档（解析 + 分块 + 入库）。"""
+    """从文件导入知识文档（解析 + 分块 + 入库），同步拷贝源文件到 knowledge/。"""
+    # 先解析文件得到文本内容
     content = _parse_file(file_path)
     if not content.strip():
         raise ValueError(f"文件内容为空或无法解析: {file_path}")
+
+    # 按解析后的文本内容算哈希（与旧记录补哈希、文本添加保持一致）
+    file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    # 去重检查
+    existing = doc_store.get_document_by_hash(file_hash)
+    if existing:
+        raise ValueError(
+            f"该文件内容已存在于知识库中（文档: {existing['title']}，"
+            f"ID: {existing['id']}），无需重复添加"
+        )
+
     title = file_name or Path(file_path).name
-    source = Path(file_path).name
-    return _chunk_and_insert(title=title, content=content, source=source)
+    source = file_name or Path(file_path).name  # 用原始文件名，不是临时文件路径
+
+    # 生成 doc_id，拷贝源文件到 knowledge/，保留原始文件名
+    doc_id = uuid.uuid4().hex[:12]
+    safe_name = _sanitize_filename(source)
+    dest_path = KNOWLEDGE_DIR / safe_name
+    # 重名时追加 doc_id 后缀
+    if dest_path.exists():
+        stem, ext = os.path.splitext(safe_name)
+        dest_path = KNOWLEDGE_DIR / f"{stem}_{doc_id}{ext}"
+    os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
+    shutil.copy2(file_path, dest_path)
+    print(f"[Manager] Source file saved: {dest_path}")
+
+    return _chunk_and_insert(
+        title=title, content=content, source=source,
+        doc_id=doc_id, knowledge_path=str(dest_path),
+        content_hash=file_hash,
+    )
 
 
 def add_file_from_bytes(file_bytes: bytes, file_name: str) -> dict:
@@ -424,10 +493,20 @@ def add_file_from_bytes(file_bytes: bytes, file_name: str) -> dict:
 
 
 def delete_document(doc_id: str) -> bool:
-    """删除文档及其所有 chunk。"""
+    """删除文档及其所有 chunk，同步清理 knowledge/ 源文件。"""
+    # 先查出 knowledge_path，删完记录后再清理文件
+    doc = doc_store.get_document(doc_id)
     kb = get_kb()
     deleted = kb.delete_chunks(doc_id)
     doc_store.delete_document(doc_id)
+
+    # 清理 knowledge/ 中的源文件
+    if doc and doc.get("knowledge_path"):
+        kp = Path(doc["knowledge_path"])
+        if kp.exists():
+            kp.unlink()
+            print(f"[Manager] Source file deleted: {kp}")
+
     return deleted > 0
 
 

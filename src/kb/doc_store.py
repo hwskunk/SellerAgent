@@ -26,18 +26,25 @@ def _ensure_table(conn: sqlite3.Connection):
             chunk_count INTEGER NOT NULL DEFAULT 1,
             char_count INTEGER NOT NULL DEFAULT 0,
             source TEXT NOT NULL DEFAULT 'manual',
+            knowledge_path TEXT DEFAULT NULL,
+            content_hash TEXT DEFAULT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         )
     """)
+    # 兼容旧表：新列如果不存在则添加
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
+    for col_name in ("knowledge_path", "content_hash"):
+        if col_name not in cols:
+            conn.execute(f"ALTER TABLE documents ADD COLUMN {col_name} TEXT DEFAULT NULL")
     conn.commit()
 
 
-def add_document(doc_id: str, title: str, full_content: str, chunk_count: int, source: str = "manual"):
+def add_document(doc_id: str, title: str, full_content: str, chunk_count: int, source: str = "manual", knowledge_path: str = "", content_hash: str = ""):
     conn = _get_conn()
     _ensure_table(conn)
     conn.execute(
-        "INSERT INTO documents (doc_id, title, full_content, chunk_count, char_count, source) VALUES (?, ?, ?, ?, ?, ?)",
-        (doc_id, title, full_content, chunk_count, len(full_content), source),
+        "INSERT INTO documents (doc_id, title, full_content, chunk_count, char_count, source, knowledge_path, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (doc_id, title, full_content, chunk_count, len(full_content), source, knowledge_path or None, content_hash or None),
     )
     conn.commit()
     conn.close()
@@ -65,7 +72,31 @@ def get_document(doc_id: str) -> dict | None:
         "chunk_count": row["chunk_count"],
         "char_count": row["char_count"],
         "source": row["source"],
+        "knowledge_path": row["knowledge_path"],
+        "content_hash": row["content_hash"],
         "created_at": row["created_at"],
+    }
+
+
+def get_document_by_hash(content_hash: str) -> dict | None:
+    """按 SHA256 内容哈希查找已有文档（用于去重）。"""
+    if not content_hash:
+        return None
+    conn = _get_conn()
+    _ensure_table(conn)
+    row = conn.execute(
+        "SELECT doc_id, title, char_count, source, knowledge_path FROM documents WHERE content_hash = ?",
+        (content_hash,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": row["doc_id"],
+        "title": row["title"],
+        "char_count": row["char_count"],
+        "source": row["source"],
+        "knowledge_path": row["knowledge_path"],
     }
 
 
