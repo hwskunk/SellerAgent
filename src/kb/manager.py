@@ -29,35 +29,14 @@ CHUNK_OVERLAP = 50    # chunk 间重叠 50 字符
 
 
 def _get_converter():
-    """获取 Docling 转换器单例（开启 OCR，支持中英文）。
+    """获取 Docling 转换器单例。
 
-    - PDF：开启 RapidOCR 文字识别，处理扫描件和 PPT 转 PDF 等图片型 PDF
-    - 图片：通过 ImageFormatOption 开启 OCR
-    - 其他格式（DOCX/XLSX/PPTX/HTML）：默认配置即可
+    OCR 默认开启（RapidOCR，中英文），处理含文字的图片和扫描件。
     """
     global _converter
     if _converter is None:
-        from docling.document_converter import DocumentConverter, PdfFormatOption, ImageFormatOption
-        from docling.datamodel.pipeline_options import PdfPipelineOptions, ImagePipelineOptions
-        from docling.datamodel.base_models import InputFormat
-
-        # PDF OCR 配置
-        pdf_options = PdfPipelineOptions()
-        pdf_options.do_ocr = True
-        pdf_options.ocr_options.lang = ["zh", "en"]
-
-        # 图片 OCR 配置
-        img_options = ImagePipelineOptions()
-        img_options.do_ocr = True
-        img_options.ocr_options.lang = ["zh", "en"]
-
-        _converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
-                InputFormat.IMAGE: ImageFormatOption(pipeline_options=img_options),
-            }
-        )
-        print("[Manager] Docling converter initialized with OCR (zh+en)")
+        from docling.document_converter import DocumentConverter
+        _converter = DocumentConverter()
     return _converter
 
 
@@ -469,8 +448,11 @@ def add_file_document(file_path: str, file_name: str = "") -> dict:
     """从文件导入知识文档（解析 + 分块 + 入库），同步拷贝源文件到 knowledge/。"""
     # 先解析文件得到文本内容
     content = _parse_file(file_path)
-    if not content.strip():
-        raise ValueError(f"文件内容为空或无法解析: {file_path}")
+    if not content.strip() or content.strip() in {"<!-- image -->", "<!-- image -->\n"}:
+        suffix = Path(file_path).suffix.lower()
+        if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".pdf"}:
+            raise ValueError("该文件未检测到文字内容，无法提取信息。请使用包含文字的文件，或将内容手动输入为文本。")
+        raise ValueError(f"文件内容为空或无法解析，请检查文件是否包含可提取的文字。")
 
     # 按解析后的文本内容算哈希（与旧记录补哈希、文本添加保持一致）
     file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
