@@ -29,3 +29,6 @@ pydantic>=2.12.0
 # 文档解析（Docling — 统一处理 PDF/DOCX/XLSX/PPTX/HTML/图片）
 docling>=2.115.0
 python-multipart>=0.0.28
+
+# OCR 引擎（扫描件/图片型 PDF/纯图片文字提取）
+rapidocr-onnxruntime>=1.4.0

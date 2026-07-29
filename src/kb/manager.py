@@ -29,10 +29,35 @@ CHUNK_OVERLAP = 50    # chunk 间重叠 50 字符
 
 
 def _get_converter():
+    """获取 Docling 转换器单例（开启 OCR，支持中英文）。
+
+    - PDF：开启 RapidOCR 文字识别，处理扫描件和 PPT 转 PDF 等图片型 PDF
+    - 图片：通过 ImageFormatOption 开启 OCR
+    - 其他格式（DOCX/XLSX/PPTX/HTML）：默认配置即可
+    """
     global _converter
     if _converter is None:
-        from docling.document_converter import DocumentConverter
-        _converter = DocumentConverter()
+        from docling.document_converter import DocumentConverter, PdfFormatOption, ImageFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, ImagePipelineOptions
+        from docling.datamodel.base_models import InputFormat
+
+        # PDF OCR 配置
+        pdf_options = PdfPipelineOptions()
+        pdf_options.do_ocr = True
+        pdf_options.ocr_options.lang = ["zh", "en"]
+
+        # 图片 OCR 配置
+        img_options = ImagePipelineOptions()
+        img_options.do_ocr = True
+        img_options.ocr_options.lang = ["zh", "en"]
+
+        _converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
+                InputFormat.IMAGE: ImageFormatOption(pipeline_options=img_options),
+            }
+        )
+        print("[Manager] Docling converter initialized with OCR (zh+en)")
     return _converter
 
 
