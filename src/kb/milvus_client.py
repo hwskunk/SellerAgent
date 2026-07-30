@@ -1,48 +1,40 @@
 """
-Milvus 客户端 — 混合检索（稠密向量 + BM25 关键词 + Reranker 精排）
+Milvus 客户端 — 混合检索（DashScope Embedding + BM25 关键词）
 
 - 存储粒度：文本切片（chunk），通过 parent_doc_id 关联到逻辑文档
-- 稠密向量：BGE-M3 (1024d)，Milvus ANN
-- 关键词检索：rank-bm25（独立于 Milvus，避免 Windows sparse 索引 bug）
-- 精排：BAAI/bge-reranker-base Cross-encoder
-- 融合：RRF 粗排 → Reranker 精排 → top_k
-
-Schema:
-  id             VARCHAR(64)  PK — chunk 唯一 ID
-  parent_doc_id  VARCHAR(64)     — 所属文档 ID
-  title          VARCHAR(512)    — 文档标题
-  content        VARCHAR(65535)  — chunk 文本
-  content_sparse SPARSE_FLOAT    — BM25 自动生成（Milvus 内置，仅存储不用）
-  dense_vector   FLOAT[1024]     — BGE-M3 编码
-  chunk_index    INT64           — 第几个 chunk (0-based)
-  chunk_count    INT64           — 该文档共有几个 chunk
-  chunk_lines    VARCHAR(32)     — "45-60" 格式，chunk 对应的原文行范围
-  source         VARCHAR(256)    — 原始文件名
-  created_at     VARCHAR(64)
+- 稠密向量：DashScope text-embedding-v3 (1024d)，API 调用，无需本地模型
+- 关键词检索：rank-bm25（独立于 Milvus，纯内存索引）
+- 融合：RRF 粗排 → top_k
+- 旧 Reranker 代码保留（_rerank / _get_reranker），当前检索流程未启用
 """
 import os
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from pymilvus import MilvusClient, DataType, Function, FunctionType, AnnSearchRequest, RRFRanker
+from pymilvus import MilvusClient
+from langchain_openai import OpenAIEmbeddings
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = os.environ.get("MILVUS_DB_PATH", str(BASE_DIR / "milvus_data" / "seller_kb.db"))
 COLLECTION_NAME = os.environ.get("MILVUS_COLLECTION_NAME", "seller_knowledge")
 DENSE_DIM = 1024
 RECALL_PER_LEG = 10   # 粗排每路召回量（Dense/BM25 各取 10）
-RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-base")
+
+# DashScope embedding 配置（与 AssistantAgent 一致）
+DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
+DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-v3")
+
 
 class MilvusKB:
     """Milvus 知识库客户端。"""
 
     def __init__(self):
         self.client: Optional[MilvusClient] = None
-        self._dense_model = None
-        self._reranker = None        # BGE Reranker Cross-encoder
+        self._dense_embedding: Optional[OpenAIEmbeddings] = None
+        self._reranker = None        # BGE Reranker Cross-encoder（当前未启用）
         self._bm25 = None            # rank-bm25 索引
         self._bm25_texts: list[str] = []   # 与 BM25 索引对应的原始文本
         self._bm25_metas: list[dict] = []  # 与 BM25 索引对应的元数据
@@ -62,54 +54,47 @@ class MilvusKB:
         return self
 
     def _create_collection(self):
-        schema = self.client.create_schema(auto_id=False, enable_dynamic_field=False)
-        schema.add_field("id", DataType.VARCHAR, max_length=64, is_primary=True)
-        schema.add_field("parent_doc_id", DataType.VARCHAR, max_length=64)
-        schema.add_field("title", DataType.VARCHAR, max_length=512)
-        schema.add_field("content", DataType.VARCHAR, max_length=65535, enable_analyzer=True)
-        schema.add_field("content_sparse", DataType.SPARSE_FLOAT_VECTOR)
-        schema.add_field("dense_vector", DataType.FLOAT_VECTOR, dim=DENSE_DIM)
-        schema.add_field("chunk_index", DataType.INT64)
-        schema.add_field("chunk_count", DataType.INT64)
-        schema.add_field("chunk_lines", DataType.VARCHAR, max_length=32)
-        schema.add_field("source", DataType.VARCHAR, max_length=256)
-        schema.add_field("created_at", DataType.VARCHAR, max_length=64)
-
-        schema.add_function(Function(
-            name="bm25", function_type=FunctionType.BM25,
-            input_field_names=["content"], output_field_names="content_sparse",
-        ))
-
-        index_params = self.client.prepare_index_params()
-        index_params.add_index(field_name="dense_vector", index_type="AUTOINDEX", metric_type="IP")
-        # Windows milvus-lite 建第二个索引时 os.rename bug，跳过 sparse 索引
-
-        self.client.create_collection(COLLECTION_NAME, schema=schema, index_params=index_params)
+        """创建集合（简单 API，兼容 milvus-lite Linux）。"""
+        self.client.create_collection(
+            collection_name=COLLECTION_NAME,
+            dimension=DENSE_DIM,
+            metric_type="IP",
+        )
+        self.client.load_collection(COLLECTION_NAME)
         print(f"[Milvus] Created collection: {COLLECTION_NAME}")
 
-    # ── Embedding ──
+    # ── Embedding（DashScope API）──
 
-    def _get_dense_model(self):
-        if self._dense_model is None:
-            from sentence_transformers import SentenceTransformer
-            model_name = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
-            print(f"[Milvus] Loading embedding model: {model_name} ...")
-            self._dense_model = SentenceTransformer(model_name, device="cpu")
-        return self._dense_model
+    def _get_dense_embedding(self) -> OpenAIEmbeddings:
+        """获取 DashScope embedding 客户端（延迟初始化，无需加载本地模型）。"""
+        if self._dense_embedding is None:
+            self._dense_embedding = OpenAIEmbeddings(
+                model=EMBEDDING_MODEL,
+                openai_api_key=DASHSCOPE_API_KEY,
+                openai_api_base=DASHSCOPE_BASE_URL,
+                tiktoken_enabled=False,
+                check_embedding_ctx_length=False,
+            )
+        return self._dense_embedding
 
     def _encode_dense(self, texts: list[str]) -> list[list[float]]:
-        model = self._get_dense_model()
-        embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-        return embeddings.tolist()
+        """用 DashScope API 编码文本为稠密向量（单次最多 10 条）。"""
+        emb = self._get_dense_embedding()
+        all_vectors = []
+        for i in range(0, len(texts), 10):
+            batch = texts[i:i + 10]
+            all_vectors.extend(emb.embed_documents(batch))
+        return all_vectors
 
-    # ── Reranker 精排 ──
+    # ── Reranker 精排（保留代码，当前未启用）──
 
     def _get_reranker(self):
         """延迟加载 BGE Reranker Cross-encoder 模型。"""
         if self._reranker is None:
             from sentence_transformers import CrossEncoder
-            print(f"[Milvus] Loading reranker model: {RERANKER_MODEL} ...")
-            self._reranker = CrossEncoder(RERANKER_MODEL, device="cpu")
+            model_name = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-base")
+            print(f"[Milvus] Loading reranker model: {model_name} ...")
+            self._reranker = CrossEncoder(model_name, device="cpu")
         return self._reranker
 
     def _rerank(
@@ -130,14 +115,11 @@ class MilvusKB:
         pairs = [(query, c["content"]) for c in candidates]
         scores = reranker.predict(pairs, show_progress_bar=False)
 
-        # 把 reranker 分数写入每个候选
         for i, c in enumerate(candidates):
             c["_rerank_score"] = float(scores[i])
 
-        # 按 reranker 分数重新排序
         candidates.sort(key=lambda c: c.get("_rerank_score", 0), reverse=True)
 
-        # 用 reranker 分数替换原来的 RRF 分数作为对外 score
         top = candidates[:top_k]
         for c in top:
             c["score"] = round(c.get("_rerank_score", 0), 4)
@@ -167,14 +149,17 @@ class MilvusKB:
         vectors = self._encode_dense(contents)
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # 简单 API 的 id 是 int64，用 doc_id 哈希做基数确保唯一且可关联
+        base = abs(hash(doc_id)) % (10 ** 12)
+
         data = []
         for i, chunk in enumerate(chunks):
             data.append({
-                "id": f"{doc_id}_c{i}",
+                "id": base * 10000 + i,
+                "vector": vectors[i],
                 "parent_doc_id": doc_id,
                 "title": title,
                 "content": chunk["content"],
-                "dense_vector": vectors[i],
                 "chunk_index": chunk["index"],
                 "chunk_count": len(chunks),
                 "chunk_lines": chunk.get("lines", ""),
@@ -220,9 +205,7 @@ class MilvusKB:
             # 字符级 bigram：对中文友好，对英文退化到空格分词
             import re
             tokens = []
-            # 先按空白切
             for word in text.split():
-                # 对连续中文做 bigram
                 if re.search(r'[一-鿿]', word):
                     chars = re.findall(r'[一-鿿]', word)
                     for i in range(len(chars)):
@@ -235,11 +218,7 @@ class MilvusKB:
             return [t for t in tokens if t.strip()]
 
     def _build_bm25(self):
-        """从 Milvus 加载所有 chunk 文本，构建 rank-bm25 索引。
-
-        BM25 是纯内存索引，不依赖 Milvus 的 sparse 功能，
-        完全规避 Windows 下 milvus-lite 无法创建 sparse 索引的 bug。
-        """
+        """从 Milvus 加载所有 chunk 文本，构建 rank-bm25 索引。"""
         if not self.client:
             return
 
@@ -251,7 +230,7 @@ class MilvusKB:
         while True:
             batch = self.client.query(
                 collection_name=COLLECTION_NAME,
-                filter="id != ''",
+                filter="id >= 0",
                 output_fields=["id", "parent_doc_id", "title", "content",
                                "source", "created_at", "chunk_index",
                                "chunk_count", "chunk_lines"],
@@ -283,7 +262,6 @@ class MilvusKB:
             return []
 
         scores = self._bm25.get_scores(tokenized)
-        # 取 top_k 索引（分数越高越好）
         indexed = list(enumerate(scores))
         indexed.sort(key=lambda x: x[1], reverse=True)
         top_indices = [i for i, s in indexed[:top_k] if s > 0]
@@ -314,12 +292,7 @@ class MilvusKB:
         bm25_results: list[dict],
         k: int = 60,
     ) -> list[dict]:
-        """RRF (Reciprocal Rank Fusion) 融合稠密和关键词检索结果。
-
-        每个结果取两种排序的倒数排名加权，k 控制平滑程度。
-        与 Milvus 原生 RRFRanker 逻辑一致。
-        """
-        # 构建 chunk id → 结果 的映射
+        """RRF (Reciprocal Rank Fusion) 融合稠密和关键词检索结果。"""
         merged: dict[str, dict] = {}
         rrf_scores: dict[str, float] = {}
 
@@ -337,31 +310,34 @@ class MilvusKB:
                 rrf_scores[cid] = 0.0
             rrf_scores[cid] += 1.0 / (k + rank + 1)
 
-        # 按 RRF 分数排序
         sorted_ids = sorted(rrf_scores.keys(), key=lambda cid: rrf_scores[cid], reverse=True)
 
         results = []
         for cid in sorted_ids:
             doc = merged[cid]
             doc["score"] = round(rrf_scores[cid], 4)
-            # 去掉内部字段
             doc.pop("_bm25_score", None)
             results.append(doc)
 
         return results
 
     def hybrid_search(self, query: str, top_k: int = 5) -> list[dict]:
-        """混合检索：RRF 粗排 → Reranker 精排。
+        """混合检索：Dense (DashScope API) + BM25 → RRF 融合。
 
-        粗排：Dense (Milvus ANN, 10) + BM25 (rank-bm25, 10)
-        精排：BGE Cross-encoder 对去重后的候选语义重排，取 top_k。
+        当前流程（DashScope，无需本地模型）：
+          Dense ANN (DashScope embedding, 10) + BM25 (rank-bm25, 10)
+          → RRF 融合去重
+          → top_k
+
+        旧流程（如需恢复 Reranker 精排，取消下面注释即可）：
+          RRF 融合 → _rerank(query, fused, top_k)
         """
         if not self.client:
             raise RuntimeError("Milvus 未初始化")
 
         t_start = time.perf_counter()
 
-        # ── Step 1: Dense 粗排（Milvus ANN）──
+        # ── Step 1: Dense 粗排（DashScope embedding + Milvus ANN）──
         t1 = time.perf_counter()
         dense_vec = self._encode_dense([query])[0]
         t_dense_encode = time.perf_counter() - t1
@@ -369,7 +345,7 @@ class MilvusKB:
         dense_raw = self.client.search(
             collection_name=COLLECTION_NAME,
             data=[dense_vec],
-            anns_field="dense_vector",
+            anns_field="vector",
             limit=RECALL_PER_LEG,
             output_fields=["id", "parent_doc_id", "title", "content",
                            "source", "created_at", "chunk_index",
@@ -411,15 +387,11 @@ class MilvusKB:
         t_bm25 = time.perf_counter() - t2
 
         # ── Step 3: RRF 融合去重 ──
+        t3 = time.perf_counter()
         fused = self._rrf_fuse(dense_results, bm25_results, k=60)
 
-        # ── Step 4: 加权融合精排（零额外推理）──
-        t3 = time.perf_counter()
-        # Dense 和 BM25 分数归一化后加权融合，替代 Reranker
-        # dense: BGE-M3 内积归一化后 [0, 1]
-        # bm25:  原始 BM25 分数，按 min-max 归一化
-        # 不做 Cross-encoder，CPU 上每对 0.5s 太慢
-        reranked = self._rerank(query, fused, top_k)
+        # ── Step 4: 取 top_k（如需 Reranker 精排，改为 _rerank(query, fused, top_k)）──
+        results = fused[:top_k]
         t_fusion = time.perf_counter() - t3
 
         t_total = time.perf_counter() - t_start
@@ -428,10 +400,10 @@ class MilvusKB:
             f"encode={t_dense_encode:.2f}s "
             f"dense={t_dense:.2f}s ({len(dense_results)} docs) "
             f"bm25={t_bm25:.2f}s ({len(bm25_results)} docs) "
-            f"fusion={t_fusion:.2f}s ({len(fused)} candidates → {len(reranked)}) "
+            f"fusion={t_fusion:.2f}s ({len(fused)} candidates → {len(results)}) "
             f"total={t_total:.2f}s"
         )
-        return reranked
+        return results
 
 
 _kb_instance: Optional[MilvusKB] = None

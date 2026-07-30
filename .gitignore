@@ -37,3 +37,4 @@ test_conversation.md
 *.tmp
 server_out.txt
 server_err.txt
+server.log

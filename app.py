@@ -51,14 +51,10 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.on_event("startup")
 async def startup():
-    """启动时初始化 KB、预加载模型、编译 LangGraph。"""
+    """启动时编译 LangGraph（Milvus 已在 run.py 中预初始化）。"""
     from src.kb.milvus_client import get_kb
-    kb = get_kb()
-
-    # 预加载模型到内存，避免首请求等待（embedding + reranker 各 ~1GB）
-    kb._get_dense_model()
-    kb._get_reranker()
-    print("[SellerAgent] 模型预加载完成")
+    get_kb()
+    print("[SellerAgent] KB 就绪")
 
     await get_graph()
     print("[SellerAgent] 启动完成")

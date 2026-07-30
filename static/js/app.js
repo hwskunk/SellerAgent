@@ -220,7 +220,7 @@ function scrollToBottom() {
 function formatContent(text) {
     // 使用 marked.js 渲染 Markdown（表格、标题、列表等）
     if (typeof marked !== 'undefined') {
-        marked.setOptions({ breaks: true, gfm: true });
+        marked.setOptions({ breaks: true, gfm: true, html: true });
         return marked.parse(text);
     }
     // 降级：简单转义
@@ -588,6 +588,10 @@ async function refreshThreadList() {
 
 async function switchThread(threadId) {
     STATE.threadId = threadId;
+
+    // 移动端：切换会话后关闭侧栏
+    closeAllPanels();
+
     // 更新侧边栏高亮
     document.querySelectorAll('.session-item').forEach(el => {
         el.classList.toggle('active', el.dataset.threadId === threadId);
@@ -624,6 +628,8 @@ async function newThread() {
         const resp = await fetch('/api/threads', { method: 'POST' });
         const data = await resp.json();
         if (data.success) {
+            // 移动端：新建会话后关闭侧栏
+            closeAllPanels();
             await refreshThreadList();
             switchThread(data.thread_id);
         }
@@ -699,6 +705,67 @@ function startRename(threadId, el) {
         if (e.key === 'Escape') { input.value = oldTitle; input.blur(); }
     });
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 移动端面板控制
+// ═══════════════════════════════════════════════════════════════
+
+function toggleSidebar() {
+    const sidebar = document.getElementById('sessionSidebar');
+    const overlay = document.getElementById('mobileOverlay');
+    const menuBtn = document.getElementById('mobileMenuBtn');
+    const kbPanel = document.getElementById('kbPanel');
+
+    const isOpen = sidebar.classList.toggle('open');
+    overlay.classList.toggle('open', isOpen);
+    if (menuBtn) menuBtn.classList.toggle('open', isOpen);
+
+    // 关闭另一个面板
+    if (isOpen && kbPanel) {
+        kbPanel.classList.remove('open');
+    }
+}
+
+function toggleKBPanel() {
+    const kbPanel = document.getElementById('kbPanel');
+    const overlay = document.getElementById('mobileOverlay');
+    const sidebar = document.getElementById('sessionSidebar');
+    const menuBtn = document.getElementById('mobileMenuBtn');
+
+    const isOpen = kbPanel.classList.toggle('open');
+    overlay.classList.toggle('open', isOpen);
+
+    // 关闭另一个面板
+    if (isOpen && sidebar) {
+        sidebar.classList.remove('open');
+        if (menuBtn) menuBtn.classList.remove('open');
+    }
+}
+
+function closeAllPanels() {
+    const sidebar = document.getElementById('sessionSidebar');
+    const kbPanel = document.getElementById('kbPanel');
+    const overlay = document.getElementById('mobileOverlay');
+    const menuBtn = document.getElementById('mobileMenuBtn');
+
+    if (sidebar) sidebar.classList.remove('open');
+    if (kbPanel) kbPanel.classList.remove('open');
+    if (overlay) overlay.classList.remove('open');
+    if (menuBtn) menuBtn.classList.remove('open');
+}
+
+// ── 窗口尺寸变化时，如果回到桌面断点则清理移动端状态 ──
+
+let _lastWindowWidth = window.innerWidth;
+
+window.addEventListener('resize', () => {
+    const currentWidth = window.innerWidth;
+    // 从手机断点跨越到桌面断点时，强制关闭所有面板
+    if (_lastWindowWidth <= 768 && currentWidth > 768) {
+        closeAllPanels();
+    }
+    _lastWindowWidth = currentWidth;
+});
 
 // ═══════════════════════════════════════════════════════════════
 // 工具函数

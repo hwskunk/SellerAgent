@@ -559,5 +559,15 @@ def _parse_file(file_path: str) -> str:
             f"支持的格式: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
     converter = _get_converter()
-    result = converter.convert(file_path)
+    try:
+        result = converter.convert(file_path)
+    except Exception as e:
+        msg = str(e)
+        if "401" in msg and "cas-server" in msg.lower() or "unauthorized" in msg.lower() and "xethub" in msg.lower():
+            raise ValueError(
+                "文档解析需要 HuggingFace Token 认证。\n"
+                "请在 .env 中设置 HF_TOKEN=你的token。\n"
+                "免费获取: https://huggingface.co/settings/tokens → Create new token (类型选 Read)"
+            ) from e
+        raise
     return result.document.export_to_markdown()
