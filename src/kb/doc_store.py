@@ -100,6 +100,20 @@ def get_document_by_hash(content_hash: str) -> dict | None:
     }
 
 
+def list_knowledge_paths() -> set[str]:
+    """返回所有文档的 knowledge_path 集合（非空值）。
+
+    用于与 knowledge/ 目录对比，清理孤立的源文件。
+    """
+    conn = _get_conn()
+    _ensure_table(conn)
+    rows = conn.execute(
+        "SELECT knowledge_path FROM documents WHERE knowledge_path IS NOT NULL AND knowledge_path != ''"
+    ).fetchall()
+    conn.close()
+    return {r["knowledge_path"] for r in rows}
+
+
 def list_documents() -> list[dict]:
     conn = _get_conn()
     _ensure_table(conn)

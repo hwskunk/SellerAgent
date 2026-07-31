@@ -33,6 +33,13 @@ knowledge/
 # 临时文档
 test_conversation.md
 
+# 部署包
+SellerAgent-deploy.zip
+SellerAgent-deploy.tar.gz
+
+# 备份文件
+*.bak
+
 # 临时文件
 *.tmp
 server_out.txt

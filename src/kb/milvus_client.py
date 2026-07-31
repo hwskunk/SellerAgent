@@ -33,15 +33,12 @@ class MilvusKB:
 
     def __init__(self):
         self.client: Optional[MilvusClient] = None
-        self._dense_embedding = None        # OpenAIEmbeddings（云端）或 SentenceTransformer（本地）
-        self._local_model = None            # SentenceTransformer 实例（本地模式）
+        self._dense_embedding = None        # DashScope OpenAIEmbeddings
         self._reranker = None        # BGE Reranker Cross-encoder（当前未启用）
         self._bm25 = None            # rank-bm25 索引
         self._bm25_texts: list[str] = []   # 与 BM25 索引对应的原始文本
         self._bm25_metas: list[dict] = []  # 与 BM25 索引对应的元数据
         self._bm25_dirty = True      # 是否需要重建 BM25 索引
-        # 自动判断：含 "/" 的是本地 HuggingFace 模型，否则走云端 API
-        self._use_local_embedding = "/" in EMBEDDING_MODEL
 
     # ── 初始化 ──
 
@@ -86,50 +83,28 @@ class MilvusKB:
         self.client.load_collection(COLLECTION_NAME)
         print(f"[Milvus] Created collection: {COLLECTION_NAME}")
 
-    # ── Embedding（自动适配本地/云端）──
+    # ── Embedding（DashScope 云端）──
 
     def _get_dense_embedding(self):
-        """获取 Embedding 客户端。
-
-        本地模式（EMBEDDING_MODEL 含 "/"，如 BAAI/bge-m3）：SentenceTransformer 本地推理
-        云端模式（如 text-embedding-v3）：DashScope API
-        """
-        if self._use_local_embedding:
-            if self._local_model is None:
-                from sentence_transformers import SentenceTransformer
-                print(f"[Milvus] Loading local embedding model: {EMBEDDING_MODEL} ...")
-                self._local_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
-            return self._local_model
-        else:
-            if self._dense_embedding is None:
-                import httpx
-                http_client = httpx.Client(
-                    timeout=30.0,
-                    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-                )
-                self._dense_embedding = OpenAIEmbeddings(
-                    model=EMBEDDING_MODEL,
-                    openai_api_key=DASHSCOPE_API_KEY,
-                    openai_api_base=DASHSCOPE_BASE_URL,
-                    tiktoken_enabled=False,
-                    check_embedding_ctx_length=False,
-                    http_client=http_client,
-                )
-            return self._dense_embedding
+        """获取 DashScope Embedding 客户端（text-embedding-v3）。"""
+        if self._dense_embedding is None:
+            import httpx
+            http_client = httpx.Client(
+                timeout=30.0,
+                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+            )
+            self._dense_embedding = OpenAIEmbeddings(
+                model=EMBEDDING_MODEL,
+                openai_api_key=DASHSCOPE_API_KEY,
+                openai_api_base=DASHSCOPE_BASE_URL,
+                tiktoken_enabled=False,
+                check_embedding_ctx_length=False,
+                http_client=http_client,
+            )
+        return self._dense_embedding
 
     def _encode_dense(self, texts: list[str]) -> list[list[float]]:
-        """编码文本为稠密向量。
-
-        本地模式：SentenceTransformer.encode() 批量推理（本地 CPU）
-        云端模式：DashScope API 并行调用（最多 3 并发）
-        """
-        if self._use_local_embedding:
-            model = self._get_dense_embedding()
-            _t0 = time.time()
-            vectors = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-            print(f"[Milvus] Local encode: {len(texts)} texts in {time.time() - _t0:.1f}s")
-            return vectors.tolist()
-
+        """DashScope API 并行编码（最多 3 并发，每批 ≤10 条）。"""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         emb = self._get_dense_embedding()
         batches = []
@@ -154,9 +129,7 @@ class MilvusKB:
         for i in range(len(batches)):
             all_vectors.extend(results[i])
 
-        if len(batches) > 1:
-            print(f"[Milvus] Embedding API: {len(texts)} texts in {len(batches)} batches, "
-                  f"parallel {min(3, len(batches))}x → {_elapsed:.1f}s")
+        print(f"[Milvus] Embedding API: {len(texts)} texts in {len(batches)} batches → {_elapsed:.1f}s")
         return all_vectors
 
     # ── Reranker 精排（保留代码，当前未启用）──

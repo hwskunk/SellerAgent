@@ -57,6 +57,29 @@ if __name__ == "__main__":
     else:
         print(f"[run.py] 知识库一致，{len(sqlite_docs)} 篇文档")
 
+    # ── 反向同步: knowledge/ → SQLite ──
+    # 清理 knowledge/ 中有但 SQLite 无对应记录的孤儿源文件。
+    # 这些文件可能来自：Milvus 重建后未重新入库、旧版本的残留文件等。
+    print("[run.py] 校验 knowledge/ 源文件 ...")
+    knowledge_dir = Path(__file__).parent / "knowledge"
+    if knowledge_dir.exists():
+        known_paths = doc_store.list_knowledge_paths()
+        orphan_files = 0
+        for f in knowledge_dir.iterdir():
+            if f.is_file():
+                f_abs = str(f.resolve())
+                if f_abs not in known_paths:
+                    print(f"  [sync] 清理孤儿源文件: {f.name}")
+                    f.unlink()
+                    orphan_files += 1
+        if orphan_files:
+            print(f"[run.py] 清理了 {orphan_files} 个孤儿源文件")
+        else:
+            print(f"[run.py] knowledge/ 一致，无孤儿文件")
+    else:
+        os.makedirs(knowledge_dir, exist_ok=True)
+        print(f"[run.py] 创建 knowledge/ 目录")
+
     # ── 预初始化 Docling ──
     # Docling 首次使用时会从 HuggingFace 下载布局分析/表格识别/OCR 等模型（几百 MB），
     # 在低配服务器上可能耗时数分钟。此处用一个最小文档触发模型下载和加载，
