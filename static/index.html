@@ -127,28 +127,13 @@
                         — 或者上传文件 —
                     </div>
 
-                    <!-- 文件上传 -->
+                    <!-- 文件上传按钮（点击弹出上传面板） -->
                     <div class="form-group">
-                        <input
-                            type="file"
-                            id="fileUpload"
-                            class="file-upload-input"
-                            accept=".txt,.md,.pdf,.docx,.xlsx,.pptx,.html,.png,.jpg,.jpeg"
-                        >
-                        <div
-                            id="uploadArea"
-                            class="btn-upload"
-                            onclick="triggerFileUpload()"
-                        >
-                            <img src="/static/icons/upload.svg" class="icon-img" alt=""> 点击上传文件<br>
-                            <small>支持 .txt .md .pdf .docx .xlsx .pptx .html .png .jpg</small>
-                        </div>
-                        <!-- 上传进度条 -->
-                        <div id="uploadProgress" class="upload-progress" style="display:none;">
-                            <div class="progress-bar-wrapper">
-                                <div class="progress-bar-fill" id="progressBarFill"></div>
-                            </div>
-                            <div class="progress-text" id="progressText">准备上传...</div>
+                        <button class="btn btn-primary btn-block" onclick="openUploadModal()">
+                            <img src="/static/icons/upload.svg" class="icon-img" alt=""> 上传文件
+                        </button>
+                        <div class="form-hint" style="text-align:center;margin-top:6px;">
+                            支持 .txt .md .pdf .docx .xlsx .pptx .html .png .jpg
                         </div>
                     </div>
                 </div>
@@ -188,6 +173,58 @@
             </div>
             <div class="modal-body" id="modalBody">
                 <div class="loading"></div> 加载中...
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- 文件上传弹窗（宝塔风格） -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="uploadModal" class="modal-overlay" style="display:none;">
+        <div class="upload-modal-content">
+            <!-- 弹窗头部 -->
+            <div class="upload-modal-header">
+                <span class="upload-modal-title">
+                    <img src="/static/icons/upload.svg" class="icon-img" alt=""> 文件上传
+                </span>
+                <button class="modal-close" onclick="closeUploadModal()">✕</button>
+            </div>
+
+            <!-- 添加文件按钮 -->
+            <div class="upload-modal-toolbar">
+                <input
+                    type="file"
+                    id="fileUpload"
+                    class="file-upload-input"
+                    accept=".txt,.md,.pdf,.docx,.xlsx,.pptx,.html,.png,.jpg,.jpeg"
+                    multiple
+                >
+                <button class="btn btn-primary" onclick="document.getElementById('fileUpload').click()">
+                    <img src="/static/icons/add.svg" class="icon-img" alt=""> 添加文件
+                </button>
+                <span class="upload-hint">支持 .txt .md .pdf .docx .xlsx .pptx .html .png .jpg，可多选</span>
+            </div>
+
+            <!-- 文件队列列表 -->
+            <div class="upload-file-list" id="uploadFileList">
+                <div class="upload-empty" id="uploadEmpty">
+                    <div style="font-size:48px;opacity:0.15;margin-bottom:12px;">
+                        <img src="/static/icons/empty.svg" class="icon-img" alt="" style="font-size:48px;">
+                    </div>
+                    <p>暂无待上传文件</p>
+                    <p style="font-size:12px;margin-top:4px;">点击「添加文件」选择要上传的文档</p>
+                </div>
+            </div>
+
+            <!-- 底部操作栏 -->
+            <div class="upload-modal-footer">
+                <span class="upload-summary" id="uploadSummary"></span>
+                <div class="upload-modal-actions">
+                    <button class="btn" onclick="closeUploadModal()">取消</button>
+                    <button class="btn btn-primary" id="btnConfirmUpload" onclick="confirmUpload()" disabled>
+                        <img src="/static/icons/upload.svg" class="icon-img" alt=""> 确认上传
+                    </button>
+                </div>
             </div>
         </div>
     </div>

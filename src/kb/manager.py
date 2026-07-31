@@ -31,12 +31,24 @@ CHUNK_OVERLAP = 50    # chunk 间重叠 50 字符
 def _get_converter():
     """获取 Docling 转换器单例。
 
-    OCR 默认开启（RapidOCR，中英文），处理含文字的图片和扫描件。
+    OCR 开启（RapidOCR），表格用 FAST 模式（ACCURATE 在 CPU 上每页多花 5-10s）。
     """
     global _converter
     if _converter is None:
-        from docling.document_converter import DocumentConverter
-        _converter = DocumentConverter()
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = True
+        pipeline_options.do_table_structure = True
+        pipeline_options.table_structure_options.mode = TableFormerMode.FAST
+        pipeline_options.accelerator_options.num_threads = 4
+
+        _converter = DocumentConverter(
+            format_options={
+                "pdf": PdfFormatOption(pipeline_options=pipeline_options),
+            }
+        )
     return _converter
 
 
@@ -325,10 +337,13 @@ def _apply_overlap(chunks: list[str], overlap: int) -> list[str]:
 
 def _chunk_and_insert(title: str, content: str, source: str, knowledge_path: str = "", doc_id: str = "", content_hash: str = "") -> dict:
     """文本分块 → Milvus 入库 → doc_store 记录元数据。"""
+    import time as _time
+    _t_total = _time.time()
     doc_id = doc_id or uuid.uuid4().hex[:12]
     kb = get_kb()
 
     # 预处理：归一化单行长文本
+    _t0 = _time.time()
     normalized = _normalize_for_splitting(content)
 
     # 分块（返回 [(text, separator_name), ...]）
@@ -336,6 +351,8 @@ def _chunk_and_insert(title: str, content: str, source: str, knowledge_path: str
     chunk_texts = [c for c in raw_chunks if c.strip()]
     if not chunk_texts:
         chunk_texts = [content]
+    _t_split = _time.time()
+    print(f"[Manager] Text split: {len(content)} chars → {len(chunk_texts)} chunks in {_t_split - _t0:.1f}s")
 
     # 构建 chunk 元数据 + 计算行号
     line_positions = _compute_line_positions(normalized)
@@ -374,7 +391,10 @@ def _chunk_and_insert(title: str, content: str, source: str, knowledge_path: str
         })
 
     # 插入 Milvus
+    _t1 = _time.time()
     kb.insert_chunks(doc_id=doc_id, title=title, source=source, chunks=chunks)
+    _t_insert = _time.time()
+    print(f"[Manager] Milvus insert: {_t_insert - _t1:.1f}s")
 
     # 记录元数据（含 knowledge_path，用于删除时同步清理源文件）
     doc_store.add_document(
@@ -384,7 +404,7 @@ def _chunk_and_insert(title: str, content: str, source: str, knowledge_path: str
         content_hash=content_hash,
     )
 
-    print(f"[Manager] Doc chunked: {len(chunks)} chunks, title={title}")
+    print(f"[Manager] Doc chunked: {len(chunks)} chunks, total={_time.time() - _t_total:.1f}s, title={title}")
     return {"id": doc_id, "title": title, "chunk_count": len(chunks), "char_count": len(content)}
 
 
@@ -549,10 +569,14 @@ SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".pptx", ".html
 
 
 def _parse_file(file_path: str) -> str:
+    import time as _time
     suffix = Path(file_path).suffix.lower()
     if suffix in (".txt", ".md"):
+        _t0 = _time.time()
         with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
+            content = f.read()
+        print(f"[Manager] Parse ({suffix}): {len(content)} chars in {_time.time() - _t0:.1f}s")
+        return content
     if suffix not in SUPPORTED_EXTENSIONS:
         raise ValueError(
             f"不支持的文件格式: {suffix}\n"
@@ -560,7 +584,13 @@ def _parse_file(file_path: str) -> str:
         )
     converter = _get_converter()
     try:
+        _t0 = _time.time()
         result = converter.convert(file_path)
+        print(f"[Manager] Docling convert: {_time.time() - _t0:.1f}s")
+        _t1 = _time.time()
+        md = result.document.export_to_markdown()
+        print(f"[Manager] Export to markdown: {_time.time() - _t1:.1f}s ({len(md)} chars)")
+        return md
     except Exception as e:
         msg = str(e)
         if "401" in msg and "cas-server" in msg.lower() or "unauthorized" in msg.lower() and "xethub" in msg.lower():
@@ -570,4 +600,3 @@ def _parse_file(file_path: str) -> str:
                 "免费获取: https://huggingface.co/settings/tokens → Create new token (类型选 Read)"
             ) from e
         raise
-    return result.document.export_to_markdown()

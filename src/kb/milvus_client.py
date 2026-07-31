@@ -33,12 +33,15 @@ class MilvusKB:
 
     def __init__(self):
         self.client: Optional[MilvusClient] = None
-        self._dense_embedding: Optional[OpenAIEmbeddings] = None
+        self._dense_embedding = None        # OpenAIEmbeddings（云端）或 SentenceTransformer（本地）
+        self._local_model = None            # SentenceTransformer 实例（本地模式）
         self._reranker = None        # BGE Reranker Cross-encoder（当前未启用）
         self._bm25 = None            # rank-bm25 索引
         self._bm25_texts: list[str] = []   # 与 BM25 索引对应的原始文本
         self._bm25_metas: list[dict] = []  # 与 BM25 索引对应的元数据
         self._bm25_dirty = True      # 是否需要重建 BM25 索引
+        # 自动判断：含 "/" 的是本地 HuggingFace 模型，否则走云端 API
+        self._use_local_embedding = "/" in EMBEDDING_MODEL
 
     # ── 初始化 ──
 
@@ -53,6 +56,26 @@ class MilvusKB:
             self._create_collection()
         return self
 
+    def list_doc_ids(self) -> set[str]:
+        """返回 Milvus 中实际存在的所有 parent_doc_id（用于与 SQLite 同步校验）。"""
+        if not self.client or not self.client.has_collection(COLLECTION_NAME):
+            return set()
+        ids = set()
+        offset = 0
+        while True:
+            batch = self.client.query(
+                collection_name=COLLECTION_NAME,
+                filter="id >= 0",
+                output_fields=["parent_doc_id"],
+                limit=500, offset=offset,
+            )
+            if not batch:
+                break
+            for row in batch:
+                ids.add(row.get("parent_doc_id", ""))
+            offset += len(batch)
+        return ids
+
     def _create_collection(self):
         """创建集合（简单 API，兼容 milvus-lite Linux）。"""
         self.client.create_collection(
@@ -63,27 +86,77 @@ class MilvusKB:
         self.client.load_collection(COLLECTION_NAME)
         print(f"[Milvus] Created collection: {COLLECTION_NAME}")
 
-    # ── Embedding（DashScope API）──
+    # ── Embedding（自动适配本地/云端）──
 
-    def _get_dense_embedding(self) -> OpenAIEmbeddings:
-        """获取 DashScope embedding 客户端（延迟初始化，无需加载本地模型）。"""
-        if self._dense_embedding is None:
-            self._dense_embedding = OpenAIEmbeddings(
-                model=EMBEDDING_MODEL,
-                openai_api_key=DASHSCOPE_API_KEY,
-                openai_api_base=DASHSCOPE_BASE_URL,
-                tiktoken_enabled=False,
-                check_embedding_ctx_length=False,
-            )
-        return self._dense_embedding
+    def _get_dense_embedding(self):
+        """获取 Embedding 客户端。
+
+        本地模式（EMBEDDING_MODEL 含 "/"，如 BAAI/bge-m3）：SentenceTransformer 本地推理
+        云端模式（如 text-embedding-v3）：DashScope API
+        """
+        if self._use_local_embedding:
+            if self._local_model is None:
+                from sentence_transformers import SentenceTransformer
+                print(f"[Milvus] Loading local embedding model: {EMBEDDING_MODEL} ...")
+                self._local_model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+            return self._local_model
+        else:
+            if self._dense_embedding is None:
+                import httpx
+                http_client = httpx.Client(
+                    timeout=30.0,
+                    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+                )
+                self._dense_embedding = OpenAIEmbeddings(
+                    model=EMBEDDING_MODEL,
+                    openai_api_key=DASHSCOPE_API_KEY,
+                    openai_api_base=DASHSCOPE_BASE_URL,
+                    tiktoken_enabled=False,
+                    check_embedding_ctx_length=False,
+                    http_client=http_client,
+                )
+            return self._dense_embedding
 
     def _encode_dense(self, texts: list[str]) -> list[list[float]]:
-        """用 DashScope API 编码文本为稠密向量（单次最多 10 条）。"""
+        """编码文本为稠密向量。
+
+        本地模式：SentenceTransformer.encode() 批量推理（本地 CPU）
+        云端模式：DashScope API 并行调用（最多 3 并发）
+        """
+        if self._use_local_embedding:
+            model = self._get_dense_embedding()
+            _t0 = time.time()
+            vectors = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+            print(f"[Milvus] Local encode: {len(texts)} texts in {time.time() - _t0:.1f}s")
+            return vectors.tolist()
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         emb = self._get_dense_embedding()
-        all_vectors = []
+        batches = []
         for i in range(0, len(texts), 10):
-            batch = texts[i:i + 10]
-            all_vectors.extend(emb.embed_documents(batch))
+            batches.append((i // 10, texts[i:i + 10]))
+        if not batches:
+            return []
+
+        results = {}
+        _t0 = time.time()
+        with ThreadPoolExecutor(max_workers=min(3, len(batches))) as pool:
+            futures = {
+                pool.submit(emb.embed_documents, batch): idx
+                for idx, batch in batches
+            }
+            for f in as_completed(futures):
+                idx = futures[f]
+                results[idx] = f.result()
+        _elapsed = time.time() - _t0
+
+        all_vectors = []
+        for i in range(len(batches)):
+            all_vectors.extend(results[i])
+
+        if len(batches) > 1:
+            print(f"[Milvus] Embedding API: {len(texts)} texts in {len(batches)} batches, "
+                  f"parallel {min(3, len(batches))}x → {_elapsed:.1f}s")
         return all_vectors
 
     # ── Reranker 精排（保留代码，当前未启用）──
@@ -146,7 +219,9 @@ class MilvusKB:
             return 0
 
         contents = [c["content"] for c in chunks]
+        _t_emb = time.time()
         vectors = self._encode_dense(contents)
+        _emb_time = time.time() - _t_emb
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # 简单 API 的 id 是 int64，用 doc_id 哈希做基数确保唯一且可关联
@@ -167,9 +242,12 @@ class MilvusKB:
                 "created_at": created_at,
             })
 
+        _t_insert = time.time()
         self.client.insert(collection_name=COLLECTION_NAME, data=data)
+        _insert_time = time.time() - _t_insert
         self._bm25_dirty = True  # 数据变更，下次检索时重建 BM25
-        print(f"[Milvus] Inserted {len(chunks)} chunks for doc: {doc_id}")
+        print(f"[Milvus] insert_chunks: embedding={_emb_time:.1f}s ({len(chunks)} chunks × API), "
+              f"milvus_insert={_insert_time:.1f}s")
         return len(chunks)
 
     def delete_chunks(self, doc_id: str) -> int:

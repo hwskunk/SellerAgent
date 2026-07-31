@@ -821,6 +821,226 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   上传弹窗（宝塔风格）
+   ═══════════════════════════════════════════════════════════════ */
+
+.upload-modal-content {
+    background: var(--bg-white);
+    border-radius: 12px;
+    width: 560px;
+    max-width: 90vw;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+    animation: fadeIn 0.2s ease;
+}
+
+.upload-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.upload-modal-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 工具栏 */
+.upload-modal-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--bg);
+}
+
+.upload-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* 文件队列列表 */
+.upload-file-list {
+    flex: 1;
+    min-height: 200px;
+    max-height: 360px;
+    overflow-y: auto;
+    padding: 0;
+    background: var(--bg-white);
+}
+
+.upload-empty {
+    text-align: center;
+    padding: 40px 16px;
+    color: var(--text-muted);
+}
+
+.upload-empty p {
+    font-size: 13px;
+    margin: 0;
+}
+
+/* 单个文件项 */
+.upload-file-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    border-bottom: 1px solid #f1f5f9;
+    transition: background 0.15s;
+}
+
+.upload-file-item:hover {
+    background: #f8fafc;
+}
+
+.upload-file-item:last-child {
+    border-bottom: none;
+}
+
+.upload-file-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 14px;
+    font-weight: 700;
+    color: white;
+}
+
+.upload-file-icon.pdf  { background: #ef4444; }
+.upload-file-icon.docx { background: #3b82f6; }
+.upload-file-icon.xlsx { background: #22c55e; }
+.upload-file-icon.pptx { background: #f97316; }
+.upload-file-icon.txt  { background: #64748b; }
+.upload-file-icon.md   { background: #6366f1; }
+.upload-file-icon.html { background: #ec4899; }
+.upload-file-icon.img  { background: #14b8a6; }
+.upload-file-icon.other { background: #94a3b8; }
+
+.upload-file-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.upload-file-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.upload-file-size {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+/* 单个文件状态 */
+.upload-file-status {
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
+    min-width: 56px;
+    text-align: right;
+}
+
+.upload-file-status.waiting {
+    color: var(--text-muted);
+}
+
+.upload-file-status.uploading {
+    color: var(--primary);
+}
+
+.upload-file-status.success {
+    color: var(--success);
+}
+
+.upload-file-status.error {
+    color: var(--danger);
+}
+
+/* 移除文件按钮 */
+.upload-file-remove {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+.upload-file-remove:hover {
+    background: var(--danger-light);
+    color: var(--danger);
+}
+
+/* 文件项内的进度条 */
+.upload-file-progress {
+    width: 100%;
+    height: 3px;
+    background: #e2e8f0;
+    border-radius: 2px;
+    margin-top: 6px;
+    overflow: hidden;
+}
+
+.upload-file-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #4f46e5, #818cf8);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.upload-file-progress-bar.active {
+    animation: progressPulse 1.5s ease-in-out infinite;
+}
+
+/* 底部操作栏 */
+.upload-modal-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.upload-summary {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.upload-modal-actions {
+    display: flex;
+    gap: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    移动端元素 — 桌面端默认隐藏
    ═══════════════════════════════════════════════════════════════ */
 .mobile-menu-btn,
@@ -1085,6 +1305,20 @@ body {
     .modal-title    { font-size: 15px; }
     .modal-close    { font-size: 22px; padding: 6px 10px; }
     .modal-body     { padding: 16px; font-size: 14px; }
+
+    /* ── 上传弹窗：移动端全屏 ── */
+    .upload-modal-content { width: 100%; max-width: 100%; max-height: 90vh; border-radius: 16px 16px 0 0; }
+    .upload-modal-header  { padding: 14px 16px; }
+    .upload-modal-title   { font-size: 15px; }
+    .upload-modal-toolbar { padding: 10px 16px; gap: 8px; flex-wrap: wrap; }
+    .upload-hint          { font-size: 11px; width: 100%; }
+    .upload-file-list     { max-height: 40vh; }
+    .upload-file-item     { padding: 10px 16px; }
+    .upload-file-name     { font-size: 12px; }
+    .upload-file-size     { font-size: 10px; }
+    .upload-file-icon     { width: 32px; height: 32px; font-size: 12px; }
+    .upload-modal-footer  { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
+    .upload-summary       { width: 100%; text-align: center; }
 
     /* Markdown 表格横向滚动 */
     .markdown-body table { display: block; overflow-x: auto; white-space: nowrap; font-size: 12px; }
