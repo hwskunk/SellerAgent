@@ -770,12 +770,16 @@ async function refreshThreadList() {
         if (!data.success) return;
 
         const list = document.getElementById('sessionList');
-        if (!data.data || data.data.length === 0) {
+        // 过滤掉企业微信接入产生的会话（wecom_ / wecom_group_ 前缀），
+        // 管理界面只显示网页端手动创建的会话
+        const threads = (data.data || []).filter(t => !t.thread_id.startsWith('wecom_'));
+
+        if (threads.length === 0) {
             list.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="font-size:12px;">暂无会话</p></div>';
             return;
         }
 
-        list.innerHTML = data.data.map(t => {
+        list.innerHTML = threads.map(t => {
             const isActive = t.thread_id === STATE.threadId;
             const title = t.title || '新会话';
             return `<div class="session-item${isActive ? ' active' : ''}" data-thread-id="${t.thread_id}" onclick="switchThread('${t.thread_id}')">

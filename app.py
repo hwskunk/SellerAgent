@@ -14,8 +14,8 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, Request, Query
+from fastapi.responses import HTMLResponse, JSONResponse, Response, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
 
@@ -254,6 +254,74 @@ async def api_rename_thread(req: ChatRequest, thread_id: str):
         return JSONResponse({"success": True, "message": "已重命名"})
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 企业微信回调 API
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/wecom/callback")
+async def wecom_callback_get(
+    msg_signature: str = Query(default=""),
+    timestamp: str = Query(default=""),
+    nonce: str = Query(default=""),
+    echostr: str = Query(default=""),
+):
+    """企业微信 URL 验证。
+
+    企微后台配置回调 URL 时，会 GET 请求此地址并携带 echostr。两种模式：
+    - 已认证企微：携带 msg_signature → 验签后解密 echostr，返回明文。
+    - 未认证企微：校验时不携带签名 → 直接回显 echostr 明文即可通过（否则 422）。
+    """
+    if not msg_signature:
+        # 未认证企微：无签名校验，直接回显 echostr
+        print("[WeCom] URL 验证成功（未认证·无签名模式）")
+        return PlainTextResponse(echostr)
+
+    from src.wecom.kf_handler import get_crypto
+    try:
+        crypto = get_crypto()
+        echo = crypto.decrypt_msg(echostr, timestamp, nonce, msg_signature)
+        print(f"[WeCom] URL 验证成功")
+        return PlainTextResponse(echo)
+    except Exception as e:
+        print(f"[WeCom] URL 验证失败: {type(e).__name__}: {e}")
+        return Response(content="", status_code=403)
+
+
+@app.post("/api/wecom/callback")
+async def wecom_callback_post(
+    request: Request,
+    msg_signature: str = Query(...),
+    timestamp: str = Query(...),
+    nonce: str = Query(...),
+):
+    """企业微信「微信客服」消息回调。
+
+    微信客服回调是"事件通知"（kf_msg_or_event，不含消息正文）：
+      1. 解密回调 XML → 拿到 Token + OpenKfId
+      2. 后台调 kf/sync_msg 拉取客户消息 → RAG → kf/send_msg 回复
+      3. 立即返回 200（方式B，防企微超时重试）
+    """
+    from src.wecom.kf_handler import get_crypto, handle_callback
+    try:
+        import xml.etree.ElementTree as ET
+        body = await request.body()
+        root = ET.fromstring(body.decode("utf-8"))
+        encrypt_node = root.find("Encrypt")
+        if encrypt_node is None or not encrypt_node.text:
+            raise ValueError("回调内容缺少 Encrypt 字段")
+        encrypt = encrypt_node.text
+
+        crypto = get_crypto()
+        xml_text = crypto.decrypt_msg(encrypt, timestamp, nonce, msg_signature)
+        handle_callback(xml_text)
+        # 方式B：立即返回空 200，防止企微超时重试
+        return Response(content="", status_code=200)
+    except Exception as e:
+        print(f"[WeCom] 回调处理失败: {type(e).__name__}: {e}")
+        # 返回 200 让企微不再重试（避免重复消息）
+        return Response(content="", status_code=200)
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -23,6 +23,7 @@ test_compare.py
 test_formula.py
 test_formula2.py
 test_timing.py
+test_wecom_callback.py
 
 # SQLite 数据库
 *.db

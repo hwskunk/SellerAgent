@@ -32,3 +32,6 @@ python-multipart>=0.0.28
 
 # OCR 引擎（扫描件/图片型 PDF/纯图片文字提取）
 rapidocr-onnxruntime>=1.4.0
+
+# 企业微信消息加解密（AES-256-CBC）
+pycryptodome>=3.20.0
