@@ -274,9 +274,16 @@ async def wecom_callback_get(
     - 未认证企微：校验时不携带签名 → 直接回显 echostr 明文即可通过（否则 422）。
     """
     if not msg_signature:
-        # 未认证企微：无签名校验，直接回显 echostr
-        print("[WeCom] URL 验证成功（未认证·无签名模式）")
-        return PlainTextResponse(echostr)
+        # 未认证企微：GET 不携带签名。echostr 可能是密文（需解密）或明文（直接回显）。
+        from src.wecom.kf_handler import get_crypto
+        try:
+            crypto = get_crypto()
+            echo = crypto.decrypt_echostr(echostr)
+            print("[WeCom] URL 验证成功（未认证·解密 echostr）")
+            return PlainTextResponse(echo)
+        except Exception:
+            print("[WeCom] URL 验证成功（未认证·回显明文 echostr）")
+            return PlainTextResponse(echostr)
 
     from src.wecom.kf_handler import get_crypto
     try:

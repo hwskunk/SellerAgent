@@ -81,6 +81,14 @@ class WeComCrypto:
             raise ValueError("签名校验失败，可能被篡改")
         return self._decrypt(encrypted)
 
+    def decrypt_echostr(self, echostr: str) -> str:
+        """解密 URL 验证的 echostr（不校验签名，供未认证企微使用）。
+
+        未认证企微的验证 GET 可能携带密文 echostr 但无签名。
+        若 echostr 本身是明文（非密文），解密会抛异常，由调用方捕获后直接回显原文。
+        """
+        return self._decrypt(echostr)
+
     def encrypt_reply(self, reply_xml: str) -> dict:
         """加密回复 XML，返回 (encrypt, signature, timestamp, nonce) 四元组。
 
