@@ -80,50 +80,56 @@ if __name__ == "__main__":
         os.makedirs(knowledge_dir, exist_ok=True)
         print(f"[run.py] 创建 knowledge/ 目录")
 
-    # ── 预初始化 Docling ──
-    # Docling 首次使用时会从 HuggingFace 下载布局分析/表格识别/OCR 等模型（几百 MB），
-    # 在低配服务器上可能耗时数分钟。此处用一个最小文档触发模型下载和加载，
-    # 避免用户上传文件时的长时间等待。
-    print("[run.py] 预初始化 Docling 文档解析引擎（首次需下载模型，请耐心等待）...")
-    _t1 = _time.time()
-    # 用 manager 里配置好的 converter（TableFormerMode.FAST + 8线程），
-    # 确保预热和实际使用是完全相同的配置
-    from src.kb.manager import _get_converter
-    _docling_converter = _get_converter()
-    # 用一个极小的内置文档做一次完整转换，触发所有子模型加载
-    import tempfile
+    # ── 预初始化 Docling（可选）──
+    # Docling 模型加载后常驻 ~5GB 内存。小内存服务器（≤2G，只收 Markdown 时用不上 Docling）
+    # 可在 .env 设 DOCLING_PREWARM=false 跳过预热，常驻内存降到 ~1-2GB；
+    # 若之后上传 PDF，Docling 会延迟加载（首次较慢）。
+    if os.environ.get("DOCLING_PREWARM", "true").lower() in ("0", "false", "no"):
+        print("[run.py] 跳过 Docling 预热（DOCLING_PREWARM=false，内存更省）")
+    else:
+        # Docling 首次使用时会从 HuggingFace 下载布局分析/表格识别/OCR 等模型（几百 MB），
+        # 在低配服务器上可能耗时数分钟。此处用一个最小文档触发模型下载和加载，
+        # 避免用户上传文件时的长时间等待。
+        print("[run.py] 预初始化 Docling 文档解析引擎（首次需下载模型，请耐心等待）...")
+        _t1 = _time.time()
+        # 用 manager 里配置好的 converter（TableFormerMode.FAST + 8线程），
+        # 确保预热和实际使用是完全相同的配置
+        from src.kb.manager import _get_converter
+        _docling_converter = _get_converter()
+        # 用一个极小的内置文档做一次完整转换，触发所有子模型加载
+        import tempfile
 
-    _warmup_path = None
-    try:
-        # 构造一个只有一行文字的最小 PDF，触发全部管线加载
-        # 如果 reportlab 不可用则回退到纯文本文件
+        _warmup_path = None
         try:
-            from reportlab.pdfgen import canvas
-            from reportlab.lib.pagesizes import A4
-            _tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-            _warmup_path = _tmp.name
-            _c = canvas.Canvas(_warmup_path, pagesize=A4)
-            _c.drawString(100, 750, "Warmup")
-            _c.save()
-            _tmp.close()
-        except ImportError:
-            # reportlab 不可用，用纯文本文件
-            _tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w")
-            _warmup_path = _tmp.name
-            _tmp.write("Warmup document for Docling initialization.")
-            _tmp.close()
-
-        _result = _docling_converter.convert(_warmup_path)
-        _md = _result.document.export_to_markdown()
-        print(f"[run.py] Docling 预热完成 ({_time.time() - _t1:.1f}s) → {len(_md)} chars markdown")
-    except Exception as e:
-        print(f"[run.py] Docling 预初始化失败（不影响启动，首次上传时会重试）: {e}")
-    finally:
-        if _warmup_path:
+            # 构造一个只有一行文字的最小 PDF，触发全部管线加载
+            # 如果 reportlab 不可用则回退到纯文本文件
             try:
-                os.unlink(_warmup_path)
-            except Exception:
-                pass
+                from reportlab.pdfgen import canvas
+                from reportlab.lib.pagesizes import A4
+                _tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                _warmup_path = _tmp.name
+                _c = canvas.Canvas(_warmup_path, pagesize=A4)
+                _c.drawString(100, 750, "Warmup")
+                _c.save()
+                _tmp.close()
+            except ImportError:
+                # reportlab 不可用，用纯文本文件
+                _tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w")
+                _warmup_path = _tmp.name
+                _tmp.write("Warmup document for Docling initialization.")
+                _tmp.close()
+
+            _result = _docling_converter.convert(_warmup_path)
+            _md = _result.document.export_to_markdown()
+            print(f"[run.py] Docling 预热完成 ({_time.time() - _t1:.1f}s) → {len(_md)} chars markdown")
+        except Exception as e:
+            print(f"[run.py] Docling 预初始化失败（不影响启动，首次上传时会重试）: {e}")
+        finally:
+            if _warmup_path:
+                try:
+                    os.unlink(_warmup_path)
+                except Exception:
+                    pass
 
     uvicorn.run(
         "app:app",
